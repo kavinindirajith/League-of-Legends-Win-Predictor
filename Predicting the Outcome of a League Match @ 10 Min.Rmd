@@ -1,0 +1,32 @@
+---
+title: "Predicting the Outcome of a League of Legends Game @ 10 Minutes"
+author: "Kavin Indirajith"
+date: "2023-02-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(tidymodels)
+library(readr)
+library(kknn)
+library(janitor)
+library(ISLR)
+library(discrim)
+library(corrr)
+library(corrplot)
+library(tidytext)
+library(ggplot2)
+library(finalfit)
+
+game_data <- read.csv("~/Documents/PSTAT 131/Final Project/high_diamond_ranked_10min.csv")
+
+dim(game_data)
+
+sum(is.na(game_data))
+```

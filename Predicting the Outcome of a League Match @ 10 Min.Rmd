@@ -2,15 +2,24 @@
 title: "Predicting the Outcome of a League of Legends Game @ 10 Minutes"
 author: "Kavin Indirajith"
 date: "2023-02-17"
-output: html_document
+output: 
+  html_document: 
+    df_print: paged
+    code_folding: hide
+    toc: yes
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+# Loading in the Required Packages and Data
+
+```{r, message=FALSE}
+# Loading in required packages
 library(tidyverse)
+library(scales)
 library(dplyr)
 library(tidymodels)
 library(readr)
@@ -23,10 +32,390 @@ library(corrplot)
 library(tidytext)
 library(ggplot2)
 library(finalfit)
+tidymodels_prefer()
 
-game_data <- read.csv("~/Documents/PSTAT 131/Final Project/high_diamond_ranked_10min.csv")
+# Read in dataset
+game_data <- read.csv("~/Documents/PSTAT 131/Final Project/data/unprocessed/high_diamond_ranked_10min.csv")
 
-dim(game_data)
+# Look at the first couple rows of the dataset
+game_data %>% head() 
+```
 
+This data was obtained from the Kaggle dataset, [League of Legends Diamond Ranked Games (10 min)](https://www.kaggle.com/datasets/bobbyscience/league-of-legends-diamond-ranked-games-10-min?resource=download), which was scraped from the Riot API by Kaggle user Yi Lan Ma.
+
+# Exploratory Data Analysis
+
+Before we can start doing any sort of model building and prediction, we have know the ins and outs of our data in order to build the best model. As this dataset was assembled by someone else, we don't how conducive it will be for our purposes. Thus, we need to explore it and see whether or not we need to make changes to it and, if so, how extensive those changes will need to be.
+
+## Exploring the Data
+
+Let's first run a couple functions on the data to get an idea of what we're working with.
+
+```{r}
+# Look at the size of the dataset
+dim(game_data) 
+# Check for missing values
 sum(is.na(game_data))
 ```
+
+We can see that the data set contains 9879 rows and 40 columns as well as zero missing values. Out of those 40 columns, one of those is `gameId`, which is unneeded for our purposes, and `blueWins`, which is our response variable. Removing these two columns still leaves us with 38 predictors, quite a bit more than what we would like.
+
+Let's take a look at these 38 predictors and their descriptions.
+
+`blueWardsPlaced`: The number of wards placed by the blue team
+
+`blueWardsDestroyed`: The number of wards destroyed by the blue team
+
+`blueFirstBlood`: First kill of the game. 1 if the blue team did the first kill, 0 otherwise.
+
+`blueKills`: Number of enemies killed by the blue team
+
+`blueDeaths`: Number of deaths from the blue team
+
+`blueAssists`: Number of kill assists from the blue team
+
+`blueEliteMonster`: Number of elite monsters killed by the blue team (Dragons and Heralds)
+
+`blueDragons`: Number of dragons killed by the blue team
+
+`blueHeralds`: Number of heralds killed by the blue team
+
+`blueTowersDestroyed`: Number of towers destroyed by the blue team
+
+`blueTotalGold`: Blue team total gold
+
+`blueAvgLevel`: Blue team average champion level
+
+`blueTotalExperience`: Blue team total experience
+
+`blueTotalMinions`: Blue team total minions killed (CS)
+
+`blueTotalJungleMinionsKilled`: Blue team total jungle monsters killed
+
+`blueGoldDiff`: Blue team gold difference compared to the enemy team
+
+`blueExperienceDiff`: Blue team experience difference compared to the enemy team
+
+`blueCSPerMin`: Blue team CS (minions) per minute
+
+`blueGoldPerMin`: Blue team gold per minute
+
+`redWardsPlaced`: The number of wards placed by the red team
+
+`redWardsDestroyed`: The number of wards destroyed by the red team
+
+`redFirstBlood`: First kill of the game. 1 if the red team did the first kill, 0 otherwise
+
+`redKills`: Number of enemies killed by the red team
+
+`redDeaths`: Number of deaths from the red team
+
+`redAssists`: Number of kill assists from the red team
+
+`redEliteMonsters`: Number of elite monsters killed by the red team (Dragons and Heralds)
+
+`redDragons`: Number of dragons killed by the red team
+
+`redHeralds`: Number of heralds killed by the red team
+
+`redTowersDestroyed`: Number of towers destroyed by the red team
+
+`redTotalGold`: Red team total gold
+
+`redAvgLevel`: Red team average champion level
+
+`redTotalExperience`: Red team total experience
+
+`redTotalMinionsKilled`: Red team total minions killed (CS)
+
+`redTotalJungleMinionsKilled`: Red team total jungle monsters killed
+
+`redGoldDiff`: Red team gold difference compared to the enemy team
+
+`redExperienceDiff`: Red team experience difference compared to the enemy team
+
+`redCSPerMin`: Red team CS (minions) per minute
+
+`redGoldPerMin`: Red team gold per minute
+
+Looking through the data, a lot of the predictors are either mutually exclusive. inversely correlated, or something along those lines. For example, `redFirstBlood` and `blueFirstBlood` are mutually exclusive, as only a single team can achieve that per game. Additionally, the variables `blueGoldDiff` and `redGoldDiff` have the same absolute value as gold difference is calculated by subtracting the respective team's gold from the opposite team. Factors like these allow us to drop or combine a number of predictors, reducing our effective predictors drastically.
+
+## Tidying the Data
+
+Now, let's do some tidying and modify the predictors, so we'll have a more reasonable amount. Essentially, what we will be doing is combine the predictors such that the new predictors will be the difference between blue team and red team for that respective variable. This will narrow down our predictors significantly, by over half. After doing this, we will be able to drop all our old predictors as they will all be incorporated into the new predictors, save for a few.
+
+```{r}
+# modifies the original data set
+game_data_cleaned <- game_data %>% 
+  clean_names() %>%
+  mutate(
+    first_blood = blue_first_blood,
+    dragons = blue_dragons - red_dragons,
+    heralds = blue_heralds - red_heralds,
+    towers_destroyed = blue_towers_destroyed - red_towers_destroyed,
+    wards_placed = blue_wards_placed - red_wards_placed,
+    wards_destroyed = blue_wards_destroyed - red_wards_destroyed,
+    experience = blue_experience_diff,
+    kills = blue_kills - red_kills,
+    assists = blue_assists - red_assists,
+    gold = blue_gold_diff,
+    minions = blue_total_minions_killed - red_total_minions_killed,
+    avg_level = blue_avg_level - red_avg_level,
+    elite_monsters = blue_elite_monsters - red_elite_monsters,
+    total_jungle_minions_killed = blue_total_jungle_minions_killed - red_total_jungle_minions_killed
+  ) %>% 
+  select(
+    -game_id, -blue_kills, -blue_assists, -blue_elite_monsters, -blue_avg_level, -blue_total_jungle_minions_killed, -red_total_minions_killed, 
+    -red_deaths, -red_wards_placed, -red_wards_destroyed, -red_cs_per_min, -red_gold_per_min,
+    -red_kills, -red_assists, -red_elite_monsters, -red_avg_level, -red_total_jungle_minions_killed, -blue_total_gold, -blue_total_experience, -blue_cs_per_min, -blue_gold_per_min, -blue_first_blood,
+    -red_towers_destroyed, -red_dragons, -red_heralds, -blue_towers_destroyed, -blue_dragons, -blue_heralds, -blue_gold_diff, -red_gold_diff, -blue_experience_diff, -red_experience_diff, 
+    -red_first_blood, -red_total_gold, -red_total_experience, 
+    -blue_total_minions_killed, -blue_deaths, -blue_wards_placed, -blue_wards_destroyed,
+    
+  )
+
+
+```
+
+After all these modifications, let's take a peek at our new dataset.
+
+```{r}
+game_data_cleaned %>% head()
+game_data_cleaned %>% dim()
+```
+
+We now have a total of 14 predictors, much more reasonable than before.
+
+Let's get a look at each of the new predictors as well as our response variable.
+
+`blue_wins`: Game outcome for blue team (1 for win, 0 for loss)
+
+`first_blood`: First blood for blue team (1 for yes, 0 for no)
+
+`dragons`: Difference between number of dragons slain by blue and red team (0: none, 1: blue, -1: red)
+
+`heralds`: Difference between number of heralds slain by blue and red team (0: none, 1: blue, -1: red)
+
+`experience`: Difference between total experience gained by blue and red team
+
+`towers_destroyed`: Difference between total number of towers destroyed by blue and red team
+
+`wards_placed`: Difference between number of wards placed by blue and red team
+
+`wards_destroyed`: Difference between number of wards destroyed by blue and red team
+
+`kills`: Difference between total number of kills by blue and red team
+
+`assists`: Difference between total number of assists by blue and red team
+
+`gold`: Difference between total gold possessed by blue and red team
+
+`minions`: Difference between total number of minions killed by blue and red team
+
+`avg_level`: Difference between average champion level of blue and red team
+
+`elite_monsters`: Difference between number of elite monsters slain by blue and red team
+
+`total_jungle_minions_killed`: Difference between total jungle minions killed by blue and red team
+
+A couple of these variables, namely `blue_wins, first_blood, dragons,` and `heralds`, need to be changed into categorical variables as their values represent categories.
+
+```{r}
+game_data_cleaned$blue_wins <- as.factor(game_data_cleaned$blue_wins)
+game_data_cleaned$first_blood <- as.factor(game_data_cleaned$first_blood)
+game_data_cleaned$dragons <- as.factor(game_data_cleaned$dragons)
+game_data_cleaned$heralds <- as.factor(game_data_cleaned$heralds)
+
+# saves cleaned data as csv
+write_csv(game_data_cleaned, "~/Documents/PSTAT 131/Final Project/data/processed/cleaned_data.csv")
+```
+
+With those adjustments, we have finished the tidying of the data and can now move on to the exploratory data analysis.
+
+## Visual EDA
+
+Now that we have the exact dataset we will be working with, we can start looking at the relationship between the outcome variable and specific predictors using some visualizations.
+
+### Win/Loss Distribution
+
+First, let's look at the outcome variable, `blue_wins` to see the distribution of wins and losses.
+
+```{r}
+ggplot(data = game_data_cleaned, aes(x = blue_wins)) + geom_bar() + geom_text(aes(label = after_stat(count)), stat = "count", vjust = 1.5, colour = "white")
+
+  
+```
+
+From the graph, we can see that the outcome distribution about even, with a near equal amount of wins and losses. There are 19 more losses than wins.
+
+### First Blood
+
+Next, let's take a look at the relationship between first bloods and wins.
+
+```{r}
+game_data_cleaned %>% 
+  group_by(first_blood) %>% 
+  mutate(wins = ifelse(blue_wins == "1", 1, 0)) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = first_blood, y = prob, , fill = first_blood)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  scale_x_discrete (limits = c("0", "1")) +
+  labs(
+    x = "Blue Scores First Blood",
+    y = "Blue Win Rate (%)",
+    title = "Wins and First Blood",
+    subtitle = "0: red scores first blood, 1: blue scores first blood"
+  )
+```
+
+First blood is the term for the first kill in the game. This is quite important as first bloods reward more experience and gold than a normal kill, so whatever team scores first blood gains a big, but not unbridgeable, head start. From the bar chart, we can see that blue team had a higher win rate when they scored first blood than when they did not. Thus, we can see that there is a positive correlation between scoring first blood and winning.
+
+### Dragons
+
+Dragons are an integral objective in League of Legends as killing one will give the team a buff. A single dragon will spawn within the first 10 minutes and only a single team can claim the buff by slaying the dragon. Let's see how much claiming the dragon's buff impacts the outcome of the game.
+
+```{r}
+game_data_cleaned%>% 
+  group_by(dragons) %>% 
+  mutate(wins = ifelse(blue_wins == "1", 1, 0)) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = dragons, y = prob, fill = dragons)) +
+  geom_bar(stat = "identity", width = 0.6) + 
+  scale_x_discrete (limits = c("-1", "0", "1")) +
+  labs(
+    x = "Blue Claims Dragon",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Dragons",
+    subtitle = "-1: red claims dragon, 0: dragon unclaimed, 1: blue claims dragon"
+  )
+```
+
+From the chart, we can see that the win rate when blue claims the dragon is over 60%, the win rate when red claims the dragon is below 40%, and the win rate when the dragon is unclaimed is about 50%. From these percentages, we can see that claiming the dragon has a positive correlation with winning the game, increasing the win rate by \~10%.
+
+### Wards Placed
+
+League of Legends is a game with a map that is constantly covered in the fog of war. This means what you can see on the map is limited to what is around you and your teammates. To rectify this, items called wards can be placed around the map so that you have vision of an area even while you and your teammates are not near it. This is incredibly important for map and objective control as it will allow you to know where enemies are and what they might be doing.
+
+```{r}
+# splits values of variable into intervals
+split <- function(x) {
+  cut(x, 
+    breaks = c(-Inf, -100, -50, -30, -15, 0, 15, 30, 50, 100, Inf)
+  )
+}
+
+game_data_cleaned%>% 
+  mutate(
+    wins = ifelse(blue_wins == "1", 1, 0),
+    wards = split(wards_placed)) %>% 
+  group_by(wards) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = wards, y = prob)) +
+  geom_bar(stat = "identity", fill = "lightblue3") +
+  labs(
+    x = "Difference in Wards Placed (blue-red)",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Wards Placed"
+  )
+```
+
+The chart shows that there is actually not a huge correlation between the amount of wards placed and winning the game. The win rate hovers between 40% and 60% for all intervals and there is no recognizable pattern. When the red team placed over 100 more wards than the blue team, the blue team had a win rate of around 50%. But when the red team placed between 50 and 100 more wards than the blue team, the blue team's win rate was closer to 40%. Points such as those really highlight how the amount of wards placed has a negligible, if any, effect on the outcome of the game.
+
+### Wards Destroyed
+
+Destroying wards denies your opponent vision and can be a deciding factor in claiming objectives and winning fights. Let's see how much of an effect destroying wards has on winning the game.
+
+```{r}
+# splits values of variable into intervals
+split2 <- function(x) {
+  cut(x, 
+    breaks = c(-Inf, -20, -10, -5, 0, 5, 10, 20, Inf)
+  )
+}
+
+game_data_cleaned %>% 
+  mutate(
+    wins = ifelse(blue_wins == "1", 1, 0),
+    wards_d = split2(wards_destroyed)) %>% 
+  group_by(wards_d) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = wards_d, y = prob)) +
+  geom_bar(stat = "identity", fill = "cornflowerblue") +
+  labs(
+    x = "Difference in Wards Destroyed (blue-red)",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Wards Destroyed"
+  )
+
+```
+
+There seems to be a positive correlation between the amount of wards destroyed and the winning the game. From the interval (-10,5] to (5,10], the win rate increases as the blue team gains an advantage in ward destruction. However, the win rate drops off after that, suggesting that focusing too much on destroying wards can have a negative effect on the win rate. The higher win rate where the red team has a large advantage in ward destruction makes that suggestion more plausible.
+
+### Kills
+
+Kills are arguably the best way to gain an advantage over the opposing team as kills grant you a lot of gold and experience, allowing your champion to become stronger quickly. As such, the amount of kills would have a great impact on the outcome of the game.
+
+```{r}
+game_data_cleaned %>% 
+  group_by(kills) %>% 
+  mutate(wins = ifelse(blue_wins == "1", 1, 0)) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = kills, y = prob)) +
+  geom_bar(stat = "identity", fill = "aquamarine3") +
+  labs(
+    x = "Difference in Kills",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Kills")
+```
+
+As expected, the amount of kills is very positively correlated with the outcome of the game. Interestingly, when neither team has an advantage in kills, the win rate is 50%. As the blue team gains an upper hand in kills, their win rate increases aggressively, eventually hitting an over 90% win rate once they have a ten kill lead. When red team has the advantage, the blue team win rate drops drastically, where it hits zero once they are down ten kills.
+
+### Experience
+
+Experience is what your champion collects in order to level up. Experience can be gained in a variety of ways, those ways being killing minions, dragons, heralds, and enemy champions as well as destroying towers.
+
+```{r}
+split3 <- function(x) {
+  cut(x, 
+    breaks = c(-Inf, -4000, -1000, -500, 0, 500, 1000, 4000, Inf)
+  )
+}
+
+game_data_cleaned %>% 
+  mutate(
+    wins = ifelse(blue_wins == "1", 1, 0),
+    exp = split3(experience)) %>% 
+  group_by(exp) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = exp, y = prob)) +
+  geom_bar(stat = "identity", fill = "darkgoldenrod") +
+  labs(
+    x = "Difference in Experience",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Experience"
+  )
+```
+
+There is a clear positive correlation between the difference in experience and the outcome of the game. As the difference in experience increases, the blue team's win rate increases and vice versa. Once the difference in experience is over 1000 for either team, their respective win rate hits over 75%. Minor differences in experience do not seem to have a great effect on the win rate as the win rate for differences from -500 to 500 is about 50%. Anything over that difference has more significant impact on the win rate.
+
+### Gold
+
+Gold is an important resource in League of Legends

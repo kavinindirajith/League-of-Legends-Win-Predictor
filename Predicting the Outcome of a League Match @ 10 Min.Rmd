@@ -1,18 +1,38 @@
 ---
 title: "Predicting the Outcome of a League of Legends Game @ 10 Minutes"
 author: "Kavin Indirajith"
-date: "2023-02-17"
-output: 
-  html_document: 
+date: "2023-03-19"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
     df_print: paged
     code_folding: hide
     toc: yes
-    toc_float: true
+    toc_float: yes
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+# Introduction
+
+The purpose of this project is to develop a model that will predict the outcome of a League of Legends game.
+
+![](https://www.leagueoflegends.com/static/logo-1200-589b3ef693ce8a750fa4b4704f1e61f2.png)
+
+## What is League of Legends?
+
+League of Legends, developed by Riot Games, is the most widely played multiplayer online battle arena in the world, with over 150 million active players monthly. Essentially, the game is a team-based strategy game where two teams of five powerful champions face off to destroy the other\'s base, also known as the Nexus. There are 3 lanes, a jungle, and 5 roles. The players get to choose from over 150 champions to play in game. A core aspect of this game is competitive ranked gameplay. The ranked game mode is where you are matched with players of similar skill level and play games to climb a ranked ladder. The ranked ladder from lowest to highest is Iron, Bronze, Silver, Gold, Platinum, Diamond, Master, Grandmaster, and Challenger. The Iron to Diamond ranks each have 4 subdivisions from 1 to 4, with 1 being the highest subdivision and 4 being the lowest.
+
+## What Are We Trying to Do?
+
+The question we are trying to answer is "How likely is a team likely to win a game based on the game statistics at 10 minutes?" A lot of important things can happen in the first ten minutes of the game, some of which can decide the flow of the game. So what I would like to do is see if it is possible to develop a model that can accurately predict the outcome of the game based on the stats at 10 minutes.
+
+## Why?
+
+I am a gamer and I like to play and watch League of Legends a lot. I have always been interested in analyzing whether a game outcome is predictable and what aspect of the game is most impactful on the outcome. Through this analysis, I reflect upon my own performance in game and amend it to focus on these aspects as well as gain better insight into the mechanics of the game itself.
 
 # Loading in the Required Packages and Data
 
@@ -32,6 +52,12 @@ library(corrplot)
 library(tidytext)
 library(ggplot2)
 library(finalfit)
+library(ranger)
+library(randomForest)
+library(kernlab)
+library(doParallel)
+library(vip)
+registerDoParallel(cores = parallel::detectCores())
 tidymodels_prefer()
 
 # Read in dataset
@@ -41,7 +67,7 @@ game_data <- read.csv("~/Documents/PSTAT 131/Final Project/data/unprocessed/high
 game_data %>% head() 
 ```
 
-This data was obtained from the Kaggle dataset, [League of Legends Diamond Ranked Games (10 min)](https://www.kaggle.com/datasets/bobbyscience/league-of-legends-diamond-ranked-games-10-min?resource=download), which was scraped from the Riot API by Kaggle user Yi Lan Ma.
+This data was obtained from the Kaggle dataset, [League of Legends Diamond Ranked Games (10 min)](https://www.kaggle.com/datasets/bobbyscience/league-of-legends-diamond-ranked-games-10-min?resource=download), which was scraped from the Riot API by Kaggle user Yi Lan Ma. This data contains contains the first 10 min. stats of approx. 10k ranked games from the ranks Diamond 1 to Master.
 
 # Exploratory Data Analysis
 
@@ -241,7 +267,7 @@ Now that we have the exact dataset we will be working with, we can start looking
 First, let's look at the outcome variable, `blue_wins` to see the distribution of wins and losses.
 
 ```{r}
-ggplot(data = game_data_cleaned, aes(x = blue_wins)) + geom_bar() + geom_text(aes(label = after_stat(count)), stat = "count", vjust = 1.5, colour = "white")
+ggplot(data = game_data_cleaned, aes(x = blue_wins)) + geom_bar() + geom_text(aes(label = after_stat(count)), stat = "count", vjust = 1.5, colour = "white") + labs(x = "Outcome of Game for Blue Team", y = "Count", title = "Win/Loss Distribution", subtitle = "1: Win, 0: Loss")
 
   
 ```
@@ -416,6 +442,517 @@ game_data_cleaned %>%
 
 There is a clear positive correlation between the difference in experience and the outcome of the game. As the difference in experience increases, the blue team's win rate increases and vice versa. Once the difference in experience is over 1000 for either team, their respective win rate hits over 75%. Minor differences in experience do not seem to have a great effect on the win rate as the win rate for differences from -500 to 500 is about 50%. Anything over that difference has more significant impact on the win rate.
 
-### Gold
+### Total Gold
 
-Gold is an important resource in League of Legends
+Gold is an important resource in League of Legends as it allows you to buy items, which are a core component in making your champion stronger, as well as wards. Gold can be gained through the same ways experience is gained. As such, gold is likely to have positive correlation with the outcome of the game, similar to experience. Let's see if that's true.
+
+```{r}
+split4 <- function(x) {
+  cut(x, 
+    breaks = c(-Inf,-6000, -4000, -1000, -500, 0, 500, 1000, 4000, 6000, Inf)
+  )
+}
+
+game_data_cleaned %>% 
+  mutate(
+    wins = ifelse(blue_wins == "1", 1, 0),
+    gold = split4(gold)) %>% 
+  group_by(gold) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = gold, y = prob)) +
+  geom_bar(stat = "identity", fill = "darkmagenta") +
+  labs(
+    x = "Difference in Total Gold",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Total Gold"
+  )
+```
+
+As expected, there is a positive correlation between the difference in total gold and the outcome of the game. As the difference increases positively, the blue team win rate increases correspondingly. The inverse is true for the red team. When the gold difference is over 1000 for either team, the respective team's win rate shoots up to 75%. Once again, minor differences in total gold do not seem to affect the win rate noticeably, with the win rate sitting at about 50%. Overall, the difference in gold only starts to impact the outcome of the game once it crosses the threshold of 500.
+
+### Towers Destroyed
+
+Towers are structures that must be destroyed in order the reach the enemy Nexus, the structure that must be destroyed in order the win the game. As mentioned before, destroying a tower grants experience and gold.
+
+```{r}
+game_data_cleaned %>% 
+  group_by(towers_destroyed) %>% 
+  mutate(wins = ifelse(blue_wins == "1", 1, 0)) %>% 
+  summarise(
+    total = n(),
+    prob = (sum(wins)/total)*100
+  ) %>% 
+  ggplot(aes(x = towers_destroyed, y = prob)) +
+  geom_bar(stat = "identity", fill = "darkcyan") +
+  labs(
+    x = "Difference in Towers Destroyed",
+    y = "Blue Win Rate (%)",
+    title = "Wins and Towers Destroyed"  )
+```
+
+Unsurprisingly, a higher difference in towers destroyed increases the win rate as the team is getting closer to the main objective. When the difference in towers is equal, the win rate is 50%. In short, there is a positive correlation between the amount of towers destroyed and winning the game such that the team with the advantage in towers destroyed has a higher chance of winning.
+
+### Correlation Plot
+
+Finally, let's take a look at the relationships between all the continuous variables using a correlation plot.
+
+```{r}
+game_data_cleaned %>% 
+  select(-blue_wins, -first_blood, -dragons, -heralds) %>% 
+  cor() %>% 
+  corrplot()
+```
+
+We can see that there are 6 variables that have a high positive correlation with each other. These 5 variables are `experience`, `kills`, `assists`, `gold`, `minions`, and `avg_level`. This makes sense since each of these variables are very closely related, with three of those variables directly feeding into the other three. From this, we can expect that these 6 variable will likely be the most important for predicting the outcome of the game.
+
+# Setting Up for the Models
+
+Now that we have a better idea of how a few of the predictors affect the outcome of a game, we can begin setting up for our models so we can start building them. We will split the cleaned data set into training and test data, create recipe to be used by those models, and establish cross-validation within our models.
+
+## Data Split
+
+First, we will be splitting our data into a training and test dataset. The training data set will be used to train the models we will be building and the test data set will be used to test the accuracy of our models once they are built. To begin, we will set a seed so that the random split will be the exact same every time we go back and work on the code. The proportion that I will be using for the split will be 75/25 as this split will allow for more training data while also having enough observations to be tested later. Having done this, we can perform our split and stratify on our response variable, `blue_wins`.
+
+```{r}
+set.seed(1234)
+game_split <- initial_split(game_data_cleaned, prop = 0.75, strata = "blue_wins")
+
+game_train <- training(game_split)
+game_test <- testing(game_split)
+```
+
+Dimensions of training data:
+
+```{r}
+dim(game_train)
+```
+
+Dimensions of testing data:
+
+```{r}
+dim(game_test)
+```
+
+The training data has 7408 observations and the testing data has 2471 observations.
+
+## Recipe Creation
+
+As we will be working with the same predictors, model conditions, and response variable the whole time, we'll create one central recipe for our models to use. We will be using the same 14 predictors mentioned before, where we dummy code `blue_wins`, `first_blood`, `dragons`, and `heralds` as they are categorical variable. We also normalize the predictors by centering and scaling them.
+
+```{r}
+win_recipe <- recipe(blue_wins ~ ., data = game_train) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+
+## K-Fold Cross Validation
+
+We'll stratify on the response variable, `blue_wins,` to make sure the data is not imbalanced and create 10 folds. We use k-fold cross validation in order to get a better estimate of the testing accuracy.
+
+```{r}
+game_folds <- vfold_cv(game_train, v = 10, strata = blue_wins)
+```
+
+# Model Building
+
+With all this done, we can finally start building the models that will do the predicting. I will be fitting 8 different models. The metric the we will be using to evaluate the performance of the models is **ROC AUC** because it shows the most significant level of efficiency in a binary classification model where the data is not perfectly balanced. To be more specific, the `roc_auc` metric measures the area under the curve of ROC (receiver operating characteristic) curve, which is is a graphical plot that illustrates the diagnostic ability of a binary classifier system as its discrimination threshold is varied.
+
+## Model Building Process
+
+The models all had a similar building process, which I will outline below.
+
+1.  Set up the model by specifying the type of model, the parameters to be tuned (if any), the engine the model comes from, and the mode, which in our case would be classification.
+
+```{r}
+# logistic regression
+# no parameters to tune
+log_model <- logistic_reg() %>% 
+  set_mode("classification") %>% 
+  set_engine("glm")
+
+# elastic net logistic regression
+# tune penalty and mixture
+enlog_model <- logistic_reg(mixture = tune(),
+                              penalty = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+# k-nearest neighbors
+# tune number of neighbors
+knn_model <- nearest_neighbor(neighbors = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("kknn")
+
+# random forest
+# tune mtry, trees, and min_n
+rf_model <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger", importance = "impurity")
+
+# ridge regresson
+# tune penalty, mixture is 0 for ridge
+ridge_model <- logistic_reg(mixture = 0, 
+                         penalty = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+
+# lasso regression
+# tune penalty, mixture is 1 for lasso
+lasso_model <- logistic_reg(penalty = tune(), 
+                         mixture = 1) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+
+# linear discriminant analysis
+# no parameters to tune
+lda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+# support vector machine
+# tune cost and degree is 1 for svm
+svm_model <- svm_poly(degree = 1, cost = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+```
+
+2.  Set up the workflow for the model and add the recipe and model
+
+```{r}
+# logistic regression
+log_wkflow <- workflow() %>% 
+  add_model(log_model) %>% 
+  add_recipe(win_recipe)
+
+# elastic net logistic regression
+enlog_wkflow <- workflow() %>% 
+  add_model(enlog_model) %>% 
+  add_recipe(win_recipe)
+
+# k-nearest neighbors
+knn_wkflow <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(win_recipe)
+
+# support vector machine
+svm_wkflow <- workflow() %>% 
+  add_model(svm_model) %>% 
+  add_recipe(win_recipe) 
+  
+# random forest
+rf_wkflow <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(win_recipe)
+
+# lasso regresion
+lasso_wkflow <- workflow() %>% 
+  add_model(lasso_model) %>% 
+  add_recipe(win_recipe)
+
+# ridge regression
+ridge_wkflow <- workflow() %>% 
+  add_model(ridge_model) %>% 
+  add_recipe(win_recipe)
+
+# linear discriminant analysis
+lda_wkflow <- workflow() %>% 
+  add_model(lda_model) %>% 
+  add_recipe(win_recipe)
+```
+
+3.  Create a tuning grid to specify ranges of the hyperparameters and the levels of each
+
+```{r}
+# elastic net
+elastic_grid <- grid_regular(penalty(), mixture(range = c(0,1)), levels = 10)
+
+# k-nearest neighbors
+knn_grid <- grid_regular(neighbors(range = c(1, 100)), levels = 5)
+
+# random forest
+rf_grid <- grid_regular(mtry(range = c(1, 12)), 
+                        trees(range = c(1,100)), min_n(range = c(5,20)), levels = 8)
+
+# lasso regression
+penalty_grid <- grid_regular(penalty(range = c(-10,10)), levels = 50)
+
+# ridge regression
+# same as lasso
+
+# support vector machine
+svm_grid <- grid_regular(cost(), levels = 5)
+```
+
+4.  Tune the model and specify the workflow, k-fold cross validation folds, and the tuning grid for our chosen parameters to tune.
+
+```{r, eval = FALSE}
+# elastic net logistic regression
+enlog_tune <- tune_grid(enlog_wkflow, resamples = game_folds, grid = elastic_grid)
+
+# k-nearest neighbors
+knn_tune <- tune_grid(knn_wkflow, resamples = game_folds, grid = knn_grid)
+
+# random forest
+rf_tune <- tune_grid(rf_wkflow, resamples = game_folds, grid = rf_grid)
+
+# lasso regression
+lasso_tune <- tune_grid(lasso_wkflow, resamples = game_folds, grid = penalty_grid)
+
+# ridge regression
+ridge_tune <- tune_grid(ridge_wkflow, resamples = game_folds, grid = penalty_grid)
+
+# support vector machine
+svm_tune <- tune_grid(svm_wkflow, resamples = game_folds, grid = svm_grid)
+
+# linear discriminant analysis
+lda_fit <- tune_grid(lda_wkflow, 
+                     resamples = game_folds)
+
+# logistic regression
+log_fit <- tune_grid(log_wkflow, 
+                     resamples = game_folds)
+```
+
+5.  Save the tuned models to an RDS file to avoid rerunning the model.
+
+```{r, eval = FALSE}
+# write_rds() to save
+
+# logistic regression
+write_rds(log_fit, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/log.rds")
+
+# linear discriminant analysis
+write_rds(lda_fit, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/lda.rds")
+
+# elastic net logistic regression
+write_rds(enlog_tune, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/elasticnet.rds")
+
+# k-nearest neighbors
+write_rds(knn_tune, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/knn.rds")
+
+# random forest
+write_rds(rf_tune, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/randomforest.rds")
+
+# lasso regression
+write_rds(lasso_tune, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/lasso.rds")
+
+# ridge regression
+write_rds(ridge_tune, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/ridge.rds")
+
+# support vector machine
+write_rds(svm_tune, file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/svm.rds")
+```
+
+6.  Load back in the saved files.
+
+```{r}
+# logistic regression
+log_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/log.rds")
+
+# linear discriminant analysis
+lda_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/lda.rds")
+
+# elastic net logistic regression 
+enlog_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/elasticnet.rds")
+
+# k-nearest neighbors
+knn_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/knn.rds")
+
+# random forest
+rf_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/randomforest.rds")
+
+# ridge regression
+ridge_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/ridge.rds")
+
+# lasso regression
+lasso_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/lasso.rds")
+
+# support vector machine
+svm_tuned <- read_rds(file = "~/Documents/PSTAT 131/Final Project/data/tuned_models/svm.rds")
+```
+
+7.  Select the most accurate model from the tuning grid, and then finalize the workflow with those specific tuning parameters.
+
+```{r, warning=FALSE}
+# elastic net logistic regression
+enlog_best <- select_best(enlog_tuned, metric = "roc_auc")
+final_enlog_wkflow <- finalize_workflow(enlog_wkflow, enlog_best)
+final_enlog_fit <- fit(final_enlog_wkflow, game_train)
+
+# k-nearest neighbors
+knn_best <- select_best(knn_tuned, metric = "roc_auc")
+final_knn_wkflow <- finalize_workflow(knn_wkflow, knn_best)
+final_knn_fit <- fit(final_knn_wkflow, game_train)
+
+# random forest
+rf_best <- select_best(rf_tuned, metric = "roc_auc")
+final_rf_wkflow <- finalize_workflow(rf_wkflow, rf_best)
+final_rf_fit <- fit(final_rf_wkflow, game_train)
+
+# ridge regression
+ridge_best <- select_best(ridge_tuned, metric = "roc_auc")
+final_ridge_wkflow <- finalize_workflow(ridge_wkflow, ridge_best)
+final_ridge_fit <- fit(final_ridge_wkflow, game_train)
+
+# lasso regression
+lasso_best <- select_best(lasso_tuned, metric = "roc_auc")
+final_lasso_wkflow <- finalize_workflow(lasso_wkflow, lasso_best)
+final_lasso_fit <- fit(final_lasso_wkflow, game_train)
+
+# support vector machine
+svm_best <- select_best(svm_tuned)
+final_svm_wkflow <- finalize_workflow(svm_wkflow, svm_best)
+final_svm_fit <- fit(final_svm_wkflow, game_train)
+
+# logistic regression
+log_best <- select_best(log_tuned, metric = "roc_auc")
+final_log_wkflow <- finalize_workflow(log_wkflow, log_best)
+final_log_fit <- fit(final_log_wkflow, game_train)
+
+# linear discriminant analysis
+lda_best <- select_best(lda_tuned, metric = "roc_auc")
+final_lda_wkflow <- finalize_workflow(lda_wkflow, lda_best)
+final_lda_fit <- fit(final_lda_wkflow, game_train)
+```
+
+# Model Result
+
+With all the models run, let's see which one performed the best.
+
+```{r, warning=FALSE}
+log_reg_auc <- augment(final_log_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+lda_auc <- augment(final_lda_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+lasso_auc <- augment(final_lasso_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+ridge_auc <- augment(final_ridge_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+knn_auc <- augment(final_knn_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+rf_auc <- augment(final_rf_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+enlog_auc <- augment(final_enlog_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+svm_auc <- augment(final_svm_fit, new_data = game_train) %>%
+  roc_auc(blue_wins, estimate = .pred_0) %>%
+  select(.estimate)
+
+game_roc_aucs <- c(log_reg_auc$.estimate,
+                           lda_auc$.estimate,
+                           ridge_auc$.estimate,
+                           lasso_auc$.estimate,
+                           knn_auc$.estimate,
+                           rf_auc$.estimate,
+                           enlog_auc$.estimate,
+                  svm_auc$.estimate)
+
+game_mod_names <- c("Logistic Regression",
+            "LDA",
+            "Ridge",
+            "Lasso",
+            "K-Nearest Neighbors",
+            "Random Forest",
+            "Elastic Net",
+            "Support Vector Machine")
+```
+
+```{r}
+game_results <- tibble(Model = game_mod_names,
+                             ROC_AUC = game_roc_aucs)
+
+game_results <- game_results %>% 
+  arrange(-game_roc_aucs)
+
+game_results
+```
+
+As we can see from the table, the random forest model performed the best, with an ROC AUC score of 0.8754. The next best performing model was the K-Nearest Neighbors model with an ROC AUC score of 0.8396. These results are obtained from the training data, so now it is time to test the model on the testing data. The model we will use for this is, obviously, the random forest model.
+
+# Results from the Best Model
+
+## Closer Look at the Best Performing Model
+
+Let's take a look at which tuned parameters were chosen as the best random forest model.
+
+```{r}
+show_best(rf_tuned, metric = "roc_auc") %>% 
+  select(-.estimator, .config) %>%
+  slice(1)
+```
+
+Random Forest #339 with with 1 predictor, 85 trees, and minimum node size of 15 was selected as the best performing random forest model out of all random forest models.
+
+## Testing the Model
+
+Now it is time to test our random forest model on data it has not seen: the testing data set we set aside before.
+
+```{r}
+rf_roc_auc <- augment(final_rf_fit, new_data = game_test, type = 'prob') %>%
+  roc_auc(blue_wins, .pred_0) %>%
+  select(.estimate)
+
+rf_roc_auc
+```
+
+With a final ROC AUC score of 0.7912, we can say that our model did pretty well. An AUC value between 0.7 and 0.8 is generally considered an acceptable result. To get simpler explanation of our model results, we can also look at the model accuracy.
+
+```{r}
+augment(final_rf_fit, new_data = game_test, type = 'prob') %>%
+  accuracy(blue_wins, .pred_class) %>%
+  select(.estimate)
+```
+
+The accuracy of our model is 0.7094, meaning it will predict the outcome correctly about 71% of the time. So while our model did well, it could've done better. However, as this is predicting the outcome of a game played by real humans where there are many unaccountable factors, it is quite impressive that we are able to predict the outcome relatively accurately, especially in the higher ranks.
+
+## ROC Curve
+
+We can visualize our AUC score by plotting the curve. The higher up and to the left the curve is, the better the model's AUC.
+
+```{r}
+augment(final_rf_fit, new_data = game_test, type = 'prob') %>%
+  roc_curve(blue_wins, .pred_0) %>%
+  autoplot()
+```
+
+As seen above, while our curve does not look a right angle of a square, it still has a nice curve that confirms our ROC AUC score.
+
+## Variable Importance
+
+As our best model was a random forest model, we can use a variable importance plot to see which variables were most important in predicting the outcome.
+
+```{r}
+final_rf_fit %>% 
+  extract_fit_parsnip() %>% 
+  vip(aesthetics = list(color = "deepskyblue3", fill = "deepskyblue"))
+```
+
+From the graph, we can see that `gold` and `kills` mattered the most in predicting the outcome. In fact, the top 6 variables are the 6 most correlated variables which we saw in the correlation plot from the Visual EDA. These results make sense as gold allows your champion to become stronger through buying items and kills allow you to hinder the enemy as well as grant you gold.
+
+# Conclusion
+
+Through extensive research, testing, and analysis, the best model to predict the outcome of a League Legends game at 10 minutes is a random forest model, although it was not perfect. This wasn't surprising as the random forest tends to be better for most data as it is more flexible due to it being nonparametric and making no assumptions about the outcome. The worst performing model was ridge regression. For next steps, I could try implementing a Naive Bayes and Decision Tree model as these models could produce better results than the random forest.
+
+Regarding the model, I think that the model's performance, while could be improved, is likely close to as accurate as it could be, simply due to the fact that it is predicting the outcome of a game played by humans. League of Legends is by nature an infuriating game. Players will sometimes play impossibly well at the start and play terrible at the end. Certain players play better under pressure and some players play worse when they start off poorly. Adding to this is that there is limited communication between teammates due to lack of voice chat. Consequently, crazy upsets can happen due to such factors. Human behavior and skill can never be fully quantified in data and can never be accounted for 100% of the time. Also, keep in mind that the model was built off data collected 10 minutes into the game. League games typically go for 30-40 minutes, so a variety of things could happen after 10 minutes that could change the flow of the game and, therefore, the outcome. Thus, I would say that our model accuracy of 70% is a big achievement.
+
+Overall, this project provided a great opportunity to apply all the data science and machine learning skills that I have learned as well as incorporate my passion for gaming into the project.
+
+![](https://mir-s3-cdn-cf.behance.net/projects/max_808/cc5ba853065555.Y3JvcCw2MzQsNDk2LDYyOSwxNjI.png)
